@@ -3,17 +3,67 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Force Graph — 2x2 Agents</title>
+<title>Force Graph</title>
 <style>
   html, body { height:100%; margin:0; background:#000; }
   body { overflow:hidden; }
-  canvas { display:block; width:100vw; height:100vh; image-rendering: pixelated; }
+  canvas { display:block; width:100vw; height:100vh; image-rendering: pixelated; touch-action: none; }
   .hint { position:fixed; left:10px; bottom:10px; font:12px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color:#7a7a7a; opacity:0.9; }
+  .refresh-btn { 
+    position:fixed; 
+    bottom:20px; 
+    right:20px; 
+    padding:8px 12px; 
+    background:#333; 
+    color:#fff; 
+    border:none; 
+    border-radius:6px; 
+    font:12px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; 
+    cursor:pointer; 
+    opacity:0.9; 
+    transition:opacity 0.2s;
+    z-index:1000;
+    display:none;
+  }
+  .refresh-btn:hover { opacity:1; }
+  
+  /* Mobile adaptations */
+  @media (max-width: 768px) {
+    .hint { display:none; }
+    .refresh-btn { 
+      display:block;
+      bottom:25px; 
+      right:50%; 
+      transform:translateX(50%);
+      padding:10px 16px;
+      font-size:14px;
+      background:#444;
+      box-shadow:0 2px 8px rgba(0,0,0,0.3);
+    }
+    canvas { 
+      width:100vw; 
+      height:100vh; 
+      position:fixed; 
+      top:0; 
+      left:0;
+    }
+  }
+  
+  /* Prevent zoom on mobile */
+  @media (max-width: 768px) {
+    body { 
+      touch-action: manipulation; 
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+  }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
 <div class="hint">press <b>R</b> to reshuffle • <b>drag</b> hubs to reposition</div>
+<button class="refresh-btn" id="refreshBtn">Reshuffle</button>
 <script type="module">
 import { forceSimulation, forceManyBody, forceCenter, forceLink, forceCollide } from 'https://cdn.skypack.dev/d3-force@3';
 
@@ -237,7 +287,8 @@ sim.on('tick', draw);
 
 // --- Interactions (hubs are draggable) ---
 let dragging = null;
-const DRAG_RADIUS2 = 10*10; // pixels^2 search radius for hubs
+const DRAG_RADIUS2 = 15*15; // pixels^2 search radius for hubs (larger for mobile)
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
 function nearestHub(x,y){
   let best=null, bd=DRAG_RADIUS2;
@@ -249,48 +300,93 @@ function nearestHub(x,y){
   return best;
 }
 
-canvas.addEventListener('pointerdown', (e)=>{
+function getEventCoordinates(e){
   const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
+  let x, y;
+  if(e.touches && e.touches.length > 0){
+    // Touch event
+    x = e.touches[0].clientX - rect.left;
+    y = e.touches[0].clientY - rect.top;
+  } else {
+    // Mouse/pointer event
+    x = e.clientX - rect.left;
+    y = e.clientY - rect.top;
+  }
+  return {x, y};
+}
+
+function startDrag(e){
+  e.preventDefault();
+  const {x, y} = getEventCoordinates(e);
   const hub = nearestHub(x,y);
   if(hub){
-    dragging = hub; hub.fx = x; hub.fy = y; canvas.style.cursor='grabbing';
+    dragging = hub; 
+    hub.fx = x; 
+    hub.fy = y; 
+    if(!isMobile) canvas.style.cursor='grabbing';
     sim.alphaTarget(0.35).restart();
   }
-});
+}
 
-canvas.addEventListener('pointermove', (e)=>{
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
-  if(dragging){ dragging.fx = x; dragging.fy = y; return; }
-  const hub = nearestHub(x,y);
-  canvas.style.cursor = hub ? 'grab' : 'default';
-});
+function moveDrag(e){
+  e.preventDefault();
+  const {x, y} = getEventCoordinates(e);
+  if(dragging){ 
+    dragging.fx = x; 
+    dragging.fy = y; 
+    return; 
+  }
+  if(!isMobile){
+    const hub = nearestHub(x,y);
+    canvas.style.cursor = hub ? 'grab' : 'default';
+  }
+}
 
 function endDrag(){
-  if(dragging){ dragging.fx=undefined; dragging.fy=undefined; dragging=null; canvas.style.cursor='default'; }
+  if(dragging){ 
+    dragging.fx=undefined; 
+    dragging.fy=undefined; 
+    dragging=null; 
+    if(!isMobile) canvas.style.cursor='default'; 
+  }
   sim.alphaTarget(0);
 }
+
+// Touch events for mobile
+canvas.addEventListener('touchstart', startDrag, {passive: false});
+canvas.addEventListener('touchmove', moveDrag, {passive: false});
+canvas.addEventListener('touchend', endDrag);
+canvas.addEventListener('touchcancel', endDrag);
+
+// Pointer events (works on both desktop and mobile)
+canvas.addEventListener('pointerdown', startDrag);
+canvas.addEventListener('pointermove', moveDrag);
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointerleave', endDrag);
 
-// Reshuffle graph with R
+// Function to reshuffle the graph
+function reshuffleGraph(){
+  endDrag();
+  sim.stop();
+  graph = makeGraph();
+  runTests(graph);
+  sim = forceSimulation(graph.nodes)
+    .force('charge', forceManyBody().strength(-30))
+    .force('center', forceCenter(window.innerWidth/2, window.innerHeight/2))
+    .force('link', forceLink(graph.links).id(d=>d.id).distance(30).strength(0.9))
+    .force('collide', forceCollide(2))
+    .on('tick', draw);
+}
+
+// Reshuffle graph with R key
 window.addEventListener('keydown', (e)=>{
   if(e.key.toLowerCase()==='r'){
-    endDrag();
-    sim.stop();
-    graph = makeGraph();
-    runTests(graph);
-    sim = forceSimulation(graph.nodes)
-      .force('charge', forceManyBody().strength(-30))
-      .force('center', forceCenter(window.innerWidth/2, window.innerHeight/2))
-      .force('link', forceLink(graph.links).id(d=>d.id).distance(30).strength(0.9))
-      .force('collide', forceCollide(2))
-      .on('tick', draw);
+    reshuffleGraph();
   }
 });
+
+// Refresh button functionality
+document.getElementById('refreshBtn').addEventListener('click', reshuffleGraph);
 </script>
 </body>
 </html>
